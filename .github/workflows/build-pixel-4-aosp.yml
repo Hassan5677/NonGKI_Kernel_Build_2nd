@@ -1,0 +1,233 @@
+name: Build Pixel 4 (Based-AOSP) (Custom Toolchain)
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+env:
+  # ==========================================
+  # Device Configuration (Pixel 4 - Flame)
+  # ==========================================
+  DEVICE_NAME: "pixel_4"
+  DEVICE_CODENAME: "flame"
+  
+  # Defconfig for Pixel 4
+  DEFCONFIG_NAME: "floral_defconfig"
+  DEFCONFIG_SOURCE: ""
+  DEFCONFIG_ORIGIN_IMAGE: ""
+  DEFCONFIG_FROM_BOOT: false
+
+  # ==========================================
+  # Custom Toolchain Configuration
+  # ==========================================
+  # Using custom android-kernel-tools instead of standard clang/gcc
+  CUSTOM_TOOLCHAIN_REPO: "https://github.com/pkm774/android-kernel-tools"
+  
+  # Toolchain Paths (relative to workspace after clone)
+  CLANG_PATH: "${GITHUB_WORKSPACE}/tools/clang/host/linux-x86/clang-r428724"
+  GCC_64_PATH: "${GITHUB_WORKSPACE}/tools/gcc/linux-x86/aarch64/aarch64-linux-android-4.9"
+  GCC_32_PATH: "${GITHUB_WORKSPACE}/tools/gcc/linux-x86/arm/arm-linux-androideabi-4.9"
+  
+  # Build flags
+  CUSTOM_CMDS: "CLANG_TRIPLE=aarch64-linux-gnu-"
+  EXTRA_CMDS: "LLVM=1 LLVM_IAS=1"
+  
+  # Host flags for OpenSSL 3.0 compatibility
+  HOSTCFLAGS: "-Wno-deprecated-declarations"
+  HOSTCXXFLAGS: "-Wno-deprecated-declarations"
+
+  # ==========================================
+  # Kernel Source
+  # ==========================================
+  KERNEL_SOURCE: "https://github.com/GrapheneOS-Archive/kernel_msm-coral.git"  # Change this to your Pixel 4 kernel source
+  KERNEL_BRANCH: "13"  # Change to your branch
+
+  # Disable standard toolchain (using custom)
+  CLANG_SOURCE: ""
+  CLANG_BRANCH: ""
+  
+  GCC_GNU: false
+  GCC_64_SOURCE: ""
+  GCC_64_BRANCH: ""
+  GCC_32_SOURCE: ""
+  GCC_32_BRANCH: ""
+
+  # ==========================================
+  # DTC Configuration
+  # ==========================================
+  DTC_REPO: "https://github.com/Hassan5677/PIXEL-DTC.git"
+  USE_PREBUILT_DTB: true
+
+  # ==========================================
+  # KernelSU Configuration
+  # ==========================================
+  KERNELSU_SOURCE: ""
+  KERNELSU_BRANCH: ""
+  
+  KERNELSU_AUTO_GET: "true"
+  KERNELSU_AUTO_FORK: "rsuntk"  # Options: magic, rsuntk, next, resukisu, sukisu
+  KERNELSU_METHOD: "shell"  # shell, manual, only
+  
+  SUSFS_ENABLE: false
+  SUSFS_FIXED: false
+
+  # ==========================================
+  # AnyKernel3 Configuration
+  # ==========================================
+  AK3_SOURCE: "https://github.com/osm0sis/AnyKernel3.git"
+  AK3_BRANCH: "master"
+  
+  BOOT_SOURCE: ""
+  PACK_METHOD: "Anykernel3"
+
+  # ==========================================
+  # Build Options
+  # ==========================================
+  ROM_TEXT: "based_aosp"
+  
+  PYTHON_VERSION: "3"
+  
+  # DTB/DTBO
+  NEED_DTBO: false
+  NEED_SAFE_DTBO: false
+  GENERATE_DTB: false
+  GENERATE_CHIP: "sm8150"  # Pixel 4 uses Snapdragon 855 (sm8150)
+
+  # ==========================================
+  # Feature Flags
+  # ==========================================
+  KPM_ENABLE: "false"
+  KPM_INLINE: "false"
+  KPM_KPATCH_NEXT: "false"
+  KPM_PATCH_SOURCE: ""
+
+  REKERNEL_ENABLE: "false"
+  HOOK_METHOD: "syscall"
+  HOOK_OLDER: "false"
+  
+  KERNEL_PATCH: "false"
+  
+  BASEBAND_GUARD_ENABLE: "false"
+  BASEBAND_GUARD_BOOT: "false"
+
+  BUILD_OTHER_CONFIG: "false"
+  MERGE_CONFIG_FILES: ""
+
+  BUILD_DEBUGGER: "false"
+  SKIP_PATCH: "false"
+  FREE_MORE_SPACE: "false"
+
+  # ==========================================
+  # Upload Configuration
+  # ==========================================
+  UPLOAD_KERNEL_IMAGE: "true"
+  UPLOAD_DTB: "true"
+  UPLOAD_MODULES: "true"
+  UPLOAD_CONFIG: "true"
+  UPLOAD_FULL_OUT: "false"
+
+jobs:
+  build-kernel:
+    name: Pixel 4 (Based-AOSP) (Custom Toolchain)
+    runs-on: ubuntu-22.04  # Using 22.04 for better compatibility with older toolchains
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+
+    steps:
+      - name: ⏰ Checkout repository
+        uses: actions/checkout@v4
+
+      - name: ⌛️ Setup Custom Toolchain Environment
+        uses: ./.github/workflows/build-env
+        # This will use your modified setup-environment.yml with custom toolchain
+
+      - name: 🔧 Clone Custom Toolchain
+        run: |
+          cd $GITHUB_WORKSPACE
+          echo "Cloning custom toolchain..."
+          git clone --depth=1 ${{ env.CUSTOM_TOOLCHAIN_REPO }} tools
+          
+          # Export toolchain paths for subsequent steps
+          echo "CLANG_PATH=$GITHUB_WORKSPACE/tools/clang/host/linux-x86/clang-r428724" >> $GITHUB_ENV
+          echo "GCC_64_PATH=$GITHUB_WORKSPACE/tools/gcc/linux-x86/aarch64/aarch64-linux-android-4.9" >> $GITHUB_ENV
+          echo "GCC_32_PATH=$GITHUB_WORKSPACE/tools/gcc/linux-x86/arm/arm-linux-androideabi-4.9" >> $GITHUB_ENV
+          
+          # Set PATH
+          echo "PATH=$GITHUB_WORKSPACE/tools/clang/host/linux-x86/clang-r428724/bin:$GITHUB_WORKSPACE/tools/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin:$GITHUB_WORKSPACE/tools/gcc/linux-x86/arm/arm-linux-androideabi-4.9/bin:$PATH" >> $GITHUB_ENV
+          
+          # Set build variables
+          echo "BUILD_CC=$GITHUB_WORKSPACE/tools/clang/host/linux-x86/clang-r428724/bin/clang" >> $GITHUB_ENV
+          echo "BUILD_CROSS_COMPILE=$GITHUB_WORKSPACE/tools/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-" >> $GITHUB_ENV
+          echo "CROSS_COMPILE_ARM32=$GITHUB_WORKSPACE/tools/gcc/linux-x86/arm/arm-linux-androideabi-4.9/bin/arm-linux-androideabi-" >> $GITHUB_ENV
+          
+          # LLVM Tools
+          CLANG_BIN="$GITHUB_WORKSPACE/tools/clang/host/linux-x86/clang-r428724/bin"
+          echo "AR=${CLANG_BIN}/llvm-ar" >> $GITHUB_ENV
+          echo "NM=${CLANG_BIN}/llvm-nm" >> $GITHUB_ENV
+          echo "LD=${CLANG_BIN}/ld.lld" >> $GITHUB_ENV
+          echo "STRIP=${CLANG_BIN}/llvm-strip" >> $GITHUB_ENV
+          echo "OBJCOPY=${CLANG_BIN}/llvm-objcopy" >> $GITHUB_ENV
+          echo "OBJDUMP=${CLANG_BIN}/llvm-objdump" >> $GITHUB_ENV
+          echo "READELF=${CLANG_BIN}/llvm-readelf" >> $GITHUB_ENV
+          echo "HOSTCC=${CLANG_BIN}/clang" >> $GITHUB_ENV
+          echo "HOSTCXX=${CLANG_BIN}/clang++" >> $GITHUB_ENV
+          
+          # Set library path for clang
+          echo "LD_LIBRARY_PATH=$GITHUB_WORKSPACE/tools/clang/host/linux-x86/clang-r428724/lib64:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+          
+          echo "Custom toolchain configured:"
+          echo "Clang: $($GITHUB_WORKSPACE/tools/clang/host/linux-x86/clang-r428724/bin/clang --version | head -1)"
+          echo "GCC64: $($GITHUB_WORKSPACE/tools/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-gcc --version | head -1)"
+
+      - name: 📥 Get DTC Tool
+        run: |
+          cd $GITHUB_WORKSPACE
+          echo "Cloning DTC repository..."
+          git clone --depth=1 ${{ env.DTC_REPO }} dtc-repo
+          
+          if [ -f "$GITHUB_WORKSPACE/dtc-repo/dtc" ]; then
+            chmod +x $GITHUB_WORKSPACE/dtc-repo/dtc
+            echo "DTC_EXT=$GITHUB_WORKSPACE/dtc-repo/dtc" >> $GITHUB_ENV
+            echo "Using custom DTC tool"
+          else
+            echo "Custom DTC not found, using system dtc"
+            echo "DTC_EXT=" >> $GITHUB_ENV
+          fi
+          
+          # Check for prebuilt DTB
+          if ls $GITHUB_WORKSPACE/dtc-repo/*.dtb 1> /dev/null 2>&1; then
+            echo "HAS_PREBUILT_DTB=true" >> $GITHUB_ENV
+            echo "Found prebuilt DTB in DTC repo"
+          fi
+
+      - name: ⚙️ Get necessary tools
+        uses: ./.github/workflows/build-ready
+
+      - name: 🪝 Patch Kernel (Optional)
+        run: |
+          echo "Add custom patches here if needed"
+          # cd $GITHUB_WORKSPACE/device_kernel
+          # Apply your patches
+
+      - name: 🚀 Build Process
+        uses: ./.github/workflows/build-process
+        # This uses your modified build-kernel.yml with custom build commands
+
+      - name: 📋 Copy Prebuilt DTB (if exists)
+        if: env.HAS_PREBUILT_DTB == 'true'
+        run: |
+          IMAGE_DIR="$GITHUB_WORKSPACE/device_kernel/out/arch/arm64/boot"
+          mkdir -p "$IMAGE_DIR"
+          
+          if ls $GITHUB_WORKSPACE/dtc-repo/*.dtb 1> /dev/null 2>&1; then
+            cp $GITHUB_WORKSPACE/dtc-repo/*.dtb "$IMAGE_DIR/dtb" || true
+            echo "Copied prebuilt DTB to output"
+          fi
+
+      - name: 🔩 Pack Process
+        uses: ./.github/workflows/pack-process
+
+      - name: ✏️ Upload Artifacts
+        uses: ./.github/workflows/upload-files
