@@ -3,81 +3,129 @@ name: 'Execute the compilation process.'
 runs:
   using: 'composite'
   steps:
-      - name: Added mkdtboimg to kernel (Experiment)
-        if: env.HAVE_NO_DTBO == 'true' && env.HAVE_NO_DTBO_TOOL != 'true'
-        shell: bash
-        run: |
-          # Get MKDTBO tool to kernel
-          cd $GITHUB_WORKSPACE/device_kernel/scripts/dtc
-          ${{ env.CURLX }} https://android.googlesource.com/platform/system/libufdt/+archive/refs/heads/main/utils/src.tar.gz src.tar.gz
-          tar zxvf src.tar.gz
-          rm -f src.tar.gz
-
-          # Hook dtbo generate code to kernel
-          cd $GITHUB_WORKSPACE/device_kernel
-          sed -i '/targets := Image Image.bz2 Image.gz Image.lz4 Image.lzma Image.lzo/s/$/ dtbo.img/' ./arch/arm64/boot/Makefile
-          sed -i '/# Add RTIC DTB to the DTB list if RTIC MPGen is enabled/i \DTBO_OBJS := $(shell find $(obj)/dts/ -name \\*.dtbo)\n' arch/arm64/boot/Makefile
-          sed -i '/$(obj)\/Image\.gz-dtb: $(obj)\/Image\.gz $(DTB_OBJS) FORCE/a \#DTBO\n$(obj)\/dtbo.img: $(DTBO_OBJS) FORCE\n\t$(call if_changed,mkdtimg)' ./arch/arm64/boot/Makefile
-          sed -i '/KBUILD_DTBS\t:= dtbs/a \#DTBO\nKBUILD_DTBO_IMG := dtbo.img' ./arch/arm64/Makefile
-          sed -i '/PHONY += vdso_install/i \ifeq ($(CONFIG_BUILD_ARM64_DT_OVERLAY),y)\n$(KBUILD_DTBO_IMG): dtbs\n\t$(Q)$(MAKE) $(build)=$(boot) $(boot)/$@\n\nall: $(KBUILD_DTBO_IMG)\nendif' arch/arm64/Makefile
-          sed -i '/dtc-tmp = $(subst $(comma),_,$(dot-target)\.dts\.tmp)/a \#DTBO\n# mkdtimg\n#----------------------------------------------------------------------------\nquiet_cmd_mkdtimg = DTBOIMG $@\ncmd_mkdtimg = python3 $(srctree)\/scripts\/dtc\/mkdtboimg.py create $@ --page_size=4096 $(filter-out FORCE,$^)' ./scripts/Makefile.lib
-
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: build-kernel-${{ env.DEVICE_NAME }}${{ env.UPLOADNAME }}
           max-size: 2G
 
+      - name: Apply ThinLTO Config
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE/device_kernel
+          
+          apply_lto_config() {
+              local config_file="${GITHUB_WORKSPACE}/device_kernel/out/.config"
+              
+              echo -e "\n[INFO]: Applying ThinLTO configuration..."
+              
+              if [ ! -f "$config_file" ]; then
+                  echo -e "[ERROR]: .config not found at ${config_file}"
+                  exit 1
+              fi
+              
+              # Disable Full LTO options
+              ./scripts/config --file "$config_file" --disable CONFIG_LTO
+              ./scripts/config --file "$config_file" --disable CONFIG_LTO_CLANG_FULL
+              ./scripts/config --file "$config_file" --disable CONFIG_LTO_NONE
+              
+              # Enable ThinLTO
+              ./scripts/config --file "$config_file" --enable CONFIG_LTO_CLANG
+              ./scripts/config --file "$config_file" --enable CONFIG_LTO_CLANG_THIN
+              ./scripts/config --file "$config_file" --enable CONFIG_THINLTO
+              
+              echo -e "[INFO]: ThinLTO configuration applied"
+          }
+          
+          # Save function for later use
+          echo "apply_lto_config() {
+              local config_file=\"${GITHUB_WORKSPACE}/device_kernel/out/.config\"
+              ./scripts/config --file \"\$config_file\" --disable CONFIG_LTO
+              ./scripts/config --file \"\$config_file\" --disable CONFIG_LTO_CLANG_FULL
+              ./scripts/config --file \"\$config_file\" --disable CONFIG_LTO_NONE
+              ./scripts/config --file \"\$config_file\" --enable CONFIG_LTO_CLANG
+              ./scripts/config --file \"\$config_file\" --enable CONFIG_LTO_CLANG_THIN
+              ./scripts/config --file \"\$config_file\" --enable CONFIG_THINLTO
+          }" >> /tmp/apply_lto.sh
+
       - name: Build Kernel
         shell: bash
         run: |
           cd $GITHUB_WORKSPACE/device_kernel/
 
-          # Function
-          BUILD_PROCESS(){
-          if [ -n "$1" ]; then
-            echo "Select: $1"
-            local BUILD_CLANG="$1"
-          else
-            BUILD_CLANG=""
-          fi
+          # Export all custom toolchain variables
+          export PATH="${{ env.CLANG_PATH }}/bin:${{ env.GCC_64_PATH }}/bin:${{ env.GCC_32_PATH }}/bin:${PATH}"
+          export BUILD_CC="${{ env.BUILD_CC }}"
+          export BUILD_CROSS_COMPILE="${{ env.BUILD_CROSS_COMPILE }}"
+          export CROSS_COMPILE_ARM32="${{ env.CROSS_COMPILE_ARM32 }}"
+          export CLANG_TRIPLE="${{ env.CLANG_TRIPLE }}"
+          export DTC_EXT="${{ env.DTC_EXT }}"
+          export AR="${{ env.AR }}"
+          export NM="${{ env.NM }}"
+          export LD="${{ env.LD }}"
+          export STRIP="${{ env.STRIP }}"
+          export OBJCOPY="${{ env.OBJCOPY }}"
+          export OBJDUMP="${{ env.OBJDUMP }}"
+          export READELF="${{ env.READELF }}"
+          export HOSTCC="${{ env.HOSTCC }}"
+          export HOSTCXX="${{ env.HOSTCXX }}"
+          export HOSTCFLAGS="${{ env.HOSTCFLAGS }}"
+          export HOSTCXXFLAGS="${{ env.HOSTCXXFLAGS }}"
 
-          if [ -n "${{ env.CLANG_SOURCE }}" ]; then
-            export PATH=$GITHUB_WORKSPACE/clang-custom/bin:$PATH
-          fi
+          echo "================"
+          echo "=Read Defconfig="
+          echo "================"
+          
+          make -C "${GITHUB_WORKSPACE}/device_kernel" \
+              O="${GITHUB_WORKSPACE}/device_kernel/out" \
+              -j"$(nproc)" \
+              ARCH=arm64 \
+              CROSS_COMPILE="${BUILD_CROSS_COMPILE}" \
+              CC="${BUILD_CC}" \
+              CLANG_TRIPLE=aarch64-linux-gnu- \
+              CROSS_COMPILE_ARM32="${CROSS_COMPILE_ARM32}" \
+              DTC_EXT="${DTC_EXT}" \
+              AR="${AR}" \
+              NM="${NM}" \
+              LD="${LD}" \
+              STRIP="${STRIP}" \
+              OBJCOPY="${OBJCOPY}" \
+              OBJDUMP="${OBJDUMP}" \
+              READELF="${READELF}" \
+              HOSTCC="${HOSTCC}" \
+              HOSTCXX="${HOSTCXX}" \
+              HOSTCFLAGS="${HOSTCFLAGS}" \
+              HOSTCXXFLAGS="${HOSTCXXFLAGS}" \
+              floral_defconfig
 
-          if [[ "$BUILD_CLANG" == "true" ]]; then
-            echo "========================"
-            echo "=Read Defconfig (Clang)="
-            echo "========================"
-            make CC="ccache clang" O=out ARCH="${{ env.KERNEL_ARCH }}" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} ${{ env.DEFCONFIG_NAME }}
-          else
-            echo "================"
-            echo "=Read Defconfig="
-            echo "================"
-            make O=out ARCH="${{ env.KERNEL_ARCH }}" ${{ env.DEFCONFIG_NAME }}
-          fi
+          # Apply ThinLTO config
+          bash /tmp/apply_lto.sh
 
-          if [[ "${{ env.BUILD_OTHER_CONFIG }}"  == "true" ]]; then
-            echo "================="
-            echo "=Merge Config(s)="
-            echo "================="
-            IFS=',' read -ra MERGE_CONFIG_FILES <<< "${{ env.MERGE_CONFIG_FILES }}"
-            for FILES in "${MERGE_CONFIG_FILES[@]}"; do
-                ./scripts/kconfig/merge_config.sh -O out/ -m out/.config arch/"${{ env.KERNEL_ARCH }}"/configs/$FILES
-            done
-            if [[ "$BUILD_CLANG" == "true" ]]; then
-                echo "==============================="
-                echo "=Execuate olddefconfig (Clang)="
-                echo "==============================="
-                make CC="ccache clang" O=out ARCH="${{ env.KERNEL_ARCH }}" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} olddefconfig
-            else
-                echo "======================="
-                echo "=Execuate olddefconfig="
-                echo "======================="
-                make O=out ARCH="${{ env.KERNEL_ARCH }}" olddefconfig
-            fi
-          fi
+          echo "======================="
+          echo "=Execute olddefconfig="
+          echo "======================="
+          
+          make -C "${GITHUB_WORKSPACE}/device_kernel" \
+              O="${GITHUB_WORKSPACE}/device_kernel/out" \
+              -j"$(nproc)" \
+              ARCH=arm64 \
+              CROSS_COMPILE="${BUILD_CROSS_COMPILE}" \
+              CC="${BUILD_CC}" \
+              CLANG_TRIPLE=aarch64-linux-gnu- \
+              CROSS_COMPILE_ARM32="${CROSS_COMPILE_ARM32}" \
+              DTC_EXT="${DTC_EXT}" \
+              AR="${AR}" \
+              NM="${NM}" \
+              LD="${LD}" \
+              STRIP="${STRIP}" \
+              OBJCOPY="${OBJCOPY}" \
+              OBJDUMP="${OBJDUMP}" \
+              READELF="${READELF}" \
+              HOSTCC="${HOSTCC}" \
+              HOSTCXX="${HOSTCXX}" \
+              HOSTCFLAGS="${HOSTCFLAGS}" \
+              HOSTCXXFLAGS="${HOSTCXXFLAGS}" \
+              olddefconfig
 
           # KPM Detect
           if [[ "${{ env.KPM_ENABLE }}" == "true" ]] && [[ "${{ env.KPM_INLINE }}" == "true" ]]; then
@@ -95,117 +143,70 @@ runs:
             fi
           fi
 
-          if [[ "$BUILD_CLANG" == "true" ]]; then
-            echo "======================"
-            echo "=Execuate Clang Build="
-            echo "======================"
+          echo "======================"
+          echo "=Execute Clang Build="
+          echo "======================"
 
-            if [[ "${{ env.BASEBAND_GUARD_ENABLE }}" == "true" ]]; then
-                make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH="${{ env.KERNEL_ARCH }}" security/selinux/
-                echo "[+] Pre-built SELinux done."
-            fi
-
-            make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH="${{ env.KERNEL_ARCH }}" 2>&1|tee error.log
-          else
-            echo "===================="
-            echo "=Execuate GCC Build="
-            echo "===================="
-
-            if [[ "${{ env.BASEBAND_GUARD_ENABLE }}" == "true" ]]; then
-                make -j$(nproc --all) O=out ARCH="${{ env.KERNEL_ARCH }}" security/selinux/
-                echo "[+] Pre-built SELinux done."
-            fi
-
-            make -j$(nproc --all) O=out ARCH="${{ env.KERNEL_ARCH }}" 2>&1|tee error.log
-          fi
-          }
-
-          # Core
-          if [ -n "${{ env.CLANG_SOURCE }}" ]; then
-            if [ -n "${{ env.GCC_64 }}" ] && [ -n "${{ env.GCC_32 }}" ]; then
-                echo "=================================="
-                echo "=Detected Clang and GCC 64 and 32="
-                echo "=================================="
-                export "${{ env.GCC_64 }}"
-                export "${{ env.GCC_32 }}"
-                BUILD_PROCESS true
-            elif [ "${{ env.GNU_GCC }}" == "true" ]; then
-                echo "============================"
-                echo "=Detected Clang and GNU GCC="
-                echo "============================"
-                export "${{ env.GCC_64 }}"
-                export "${{ env.GCC_32 }}"
-                BUILD_PROCESS true
-            elif [ -n "${{ env.GCC_64 }}" ]; then
-                echo "==========================="
-                echo "=Detected Clang and GCC 64="
-                echo "==========================="
-                export "${{ env.GCC_64 }}"
-                BUILD_PROCESS true
-            else
-                echo "====================="
-                echo "=Detected Only Clang="
-                echo "====================="
-                BUILD_PROCESS true
-            fi
-
-          elif [ "${{ env.KERNEL_ARCH }}" == "arm64" ]; then
-            if [ -n "${{ env.GCC_64 }}" ] && [ -n "${{ env.GCC_32 }}" ]; then
-                echo "=================================="
-                echo "=Detected ARM64 GCC 64 and GCC 32="
-                echo "=================================="
-                export "${{ env.GCC_64 }}"
-                export "${{ env.GCC_32 }}"
-                BUILD_PROCESS
-            elif [ "${{ env.GNU_GCC }}" == "true" ]; then
-                echo "========================"
-                echo "=Detected ARM64 GNU GCC="
-                echo "========================"
-                export "${{ env.GCC_64 }}"
-                export "${{ env.GCC_32 }}"
-                BUILD_PROCESS
-            elif [ -n "${{ env.GCC_64 }}" ]; then
-                echo "============================"
-                echo "=Detected ARM64 Only GCC 64="
-                echo "============================"
-                export "${{ env.GCC_64 }}"
-                BUILD_PROCESS
-            fi
-
-          elif [ "${{ env.KERNEL_ARCH }}" == "arm" ]; then
-            if [ "${{ env.GNU_GCC }}" == "true" ]; then
-                echo "======================"
-                echo "=Detected ARM GNU GCC="
-                echo "======================"
-                export "${{ env.GCC_32 }}"
-                BUILD_PROCESS
-            elif [ -n "${{ env.GCC_32 }}" ]; then
-                echo "====================="
-                echo "=Detected ARM GCC 32="
-                echo "====================="
-                export "${{ env.GCC_32 }}"
-                BUILD_PROCESS
-            fi
-
-          else
-            echo "invaild kernel arch, stop."
-            false
+          if [[ "${{ env.BASEBAND_GUARD_ENABLE }}" == "true" ]]; then
+              make -j$(nproc --all) \
+                  -C "${GITHUB_WORKSPACE}/device_kernel" \
+                  O="${GITHUB_WORKSPACE}/device_kernel/out" \
+                  ARCH=arm64 \
+                  CROSS_COMPILE="${BUILD_CROSS_COMPILE}" \
+                  CC="${BUILD_CC}" \
+                  CLANG_TRIPLE=aarch64-linux-gnu- \
+                  CROSS_COMPILE_ARM32="${CROSS_COMPILE_ARM32}" \
+                  DTC_EXT="${DTC_EXT}" \
+                  AR="${AR}" \
+                  NM="${NM}" \
+                  LD="${LD}" \
+                  STRIP="${STRIP}" \
+                  OBJCOPY="${OBJCOPY}" \
+                  OBJDUMP="${OBJDUMP}" \
+                  READELF="${READELF}" \
+                  HOSTCC="${HOSTCC}" \
+                  HOSTCXX="${HOSTCXX}" \
+                  HOSTCFLAGS="${HOSTCFLAGS}" \
+                  HOSTCXXFLAGS="${HOSTCXXFLAGS}" \
+                  security/selinux/
+              echo "[+] Pre-built SELinux done."
           fi
 
-      - name: Generate DTBO
-        if: env.HAVE_NO_DTBO == 'true' && env.HAVE_NO_DTBO_TOOL == 'true'
+          make -j$(nproc --all) \
+              -C "${GITHUB_WORKSPACE}/device_kernel" \
+              O="${GITHUB_WORKSPACE}/device_kernel/out" \
+              ARCH=arm64 \
+              CROSS_COMPILE="${BUILD_CROSS_COMPILE}" \
+              CC="${BUILD_CC}" \
+              CLANG_TRIPLE=aarch64-linux-gnu- \
+              CROSS_COMPILE_ARM32="${CROSS_COMPILE_ARM32}" \
+              DTC_EXT="${DTC_EXT}" \
+              AR="${AR}" \
+              NM="${NM}" \
+              LD="${LD}" \
+              STRIP="${STRIP}" \
+              OBJCOPY="${OBJCOPY}" \
+              OBJDUMP="${OBJDUMP}" \
+              READELF="${READELF}" \
+              HOSTCC="${HOSTCC}" \
+              HOSTCXX="${HOSTCXX}" \
+              HOSTCFLAGS="${HOSTCFLAGS}" \
+              HOSTCXXFLAGS="${HOSTCXXFLAGS}" \
+              2>&1 | tee error.log
+
+      - name: Copy Prebuilt DTB
+        if: env.HAS_PREBUILT_DTB == 'true'
         shell: bash
         run: |
           cd $GITHUB_WORKSPACE/device_kernel
-          mkdir dtbo_tool
-          cd dtbo_tool
-          ${{ env.CURLX }} https://android.googlesource.com/platform/system/libufdt/+archive/master/utils.tar.gz mkdtboimg.tar.gz
-          tar zxvf mkdtboimg.tar.gz
-          cd ../
-          if [ -d "$GITHUB_WORKSPACE/device_kernel/out/arch/arm64/boot/dts/vendor" ]; then
-            python dtbo_tool/src/mkdtboimg.py create $GITHUB_WORKSPACE/device_kernel/out/arch/arm64/boot/dtbo.img $GITHUB_WORKSPACE/device_kernel/out/arch/arm64/boot/dts/vendor/${{ env.GENERATE_CHIP }}/*.dtbo
-          else
-            python dtbo_tool/src/mkdtboimg.py create $GITHUB_WORKSPACE/device_kernel/out/arch/arm64/boot/dtbo.img $GITHUB_WORKSPACE/device_kernel/out/arch/arm64/boot/dts/${{ env.GENERATE_CHIP }}/*.dtbo
+          
+          IMAGE_DIR="$GITHUB_WORKSPACE/device_kernel/out/arch/arm64/boot"
+          mkdir -p "$IMAGE_DIR"
+          
+          # Copy prebuilt DTB from DTC repo
+          if [ -f "${{ env.PREBUILT_DTB_PATH }}"/*.dtb ]; then
+            cp ${{ env.PREBUILT_DTB_PATH }}/*.dtb "$IMAGE_DIR/dtb"
+            echo "[+] Copied prebuilt DTB"
           fi
 
       - name: Analyze compile error
