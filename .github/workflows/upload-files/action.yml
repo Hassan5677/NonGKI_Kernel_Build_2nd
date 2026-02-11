@@ -18,3 +18,49 @@ runs:
           name: Kernel-${{ env.PACK_NAME }}
           path: |
             ${{ env.PACK_NAME }}
+
+      - name: Upload Compiled Kernel Image
+        if: env.UPLOAD_KERNEL_IMAGE == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-Image-${{ env.DEVICE_CODENAME || 'flame' }}-${{ github.run_id }}
+          path: |
+            device_kernel/out/arch/arm64/boot/Image
+            device_kernel/out/arch/arm64/boot/Image.gz
+            device_kernel/out/arch/arm64/boot/Image.gz-dtb
+
+      - name: Upload DTB Files
+        if: env.UPLOAD_DTB == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: DTB-Files-${{ env.DEVICE_CODENAME || 'flame' }}-${{ github.run_id }}
+          path: |
+            device_kernel/out/arch/arm64/boot/dtb
+            device_kernel/out/arch/arm64/boot/dtb.img
+            device_kernel/out/arch/arm64/boot/dtbo.img
+
+      - name: Upload Kernel Modules
+        if: env.UPLOAD_MODULES == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-Modules-${{ env.DEVICE_CODENAME || 'flame' }}-${{ github.run_id }}
+          path: |
+            device_kernel/out/**/*.ko
+
+      - name: Upload Build Configuration
+        if: env.UPLOAD_CONFIG == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-Config-${{ env.DEVICE_CODENAME || 'flame' }}-${{ github.run_id }}
+          path: |
+            device_kernel/out/.config
+            device_kernel/out/include/generated/compile.h
+
+      - name: Upload Full Out Directory
+        if: env.UPLOAD_FULL_OUT == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Full-Build-Out-${{ env.DEVICE_CODENAME || 'flame' }}-${{ github.run_id }}
+          path: |
+            device_kernel/out/
+          retention-days: 30
